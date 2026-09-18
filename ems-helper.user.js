@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         日本邮便 EMS 制单助手
 // @namespace    local.ems.helper
-// @version      2.0.6
+// @version      2.0.7
 // @description  中外地址自由解析，多包裹队列，自动编号、填单并下载 PDF。
 // @match        https://www.int-mypage.post.japanpost.jp/mypage/*.do
 // @updateURL    https://raw.githubusercontent.com/sxc0519/ems-helper/main/ems-helper.user.js
@@ -378,7 +378,7 @@ function fileName(tracking) { if (!/^[A-Z]{2}\d{9}[A-Z]{2}$/.test(tracking)) thr
     const sender = cells.find(td => !td.querySelector('td') && /寄件人/.test(td.textContent) && /JAPAN/.test(td.textContent));
     const expectedSender = order.sender === 'CGM' ? 'CGM INNOVATION CO.LTD.' : 'Gentle General Medicine Clinic';
     if (!sender || !textOf(sender).includes(expectedSender)) throw new Error('确认页寄件人与预设不一致，请检查。');
-    const recipient = cells.find(td => !td.querySelector('td') && /收件人/.test(td.textContent) && /CHINA/.test(td.textContent));
+    const recipient = cells.find(td => !td.querySelector('td') && /收件人/.test(td.textContent));
     const compact = value => String(value).replace(/\s+/g, '');
     if (!recipient || ['name','phone','province','city','address1','address2','postal'].some(k =>
       order.recipient[k] && !compact(recipient.textContent).includes(compact(order.recipient[k])))) {
@@ -490,7 +490,7 @@ function fileName(tracking) { if (!/^[A-Z]{2}\d{9}[A-Z]{2}$/.test(tracking)) thr
       input:focus,select:focus,textarea:focus{outline:2px solid #6da4d4;outline-offset:1px}button.action{border:1px solid #b7cada;border-radius:6px;padding:8px 10px;background:#edf3f8;color:#18324d;cursor:pointer;font-weight:600}button.primary{background:#12619a;border-color:#12619a;color:white}button:disabled{opacity:.45;cursor:default}
       .actions{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0}.hint{color:#60768b;font-size:11px;margin:7px 0}.total{margin:9px 0;padding:8px;background:#edf5fc;border-radius:6px;font-weight:600}.status{white-space:pre-wrap;margin-top:9px;padding:8px;border-radius:6px;background:#f1f5f8;font-size:12px}.error{background:#fff0ed;color:#9f3527}.check{display:flex;gap:7px;margin:9px 0;align-items:flex-start}.check input{width:auto;margin-top:4px}.check span{font-size:11px}details{margin-top:8px}summary{cursor:pointer;font-weight:600;margin-bottom:8px}.queue{font-size:11px;background:#f6f8fa;border:1px solid #d9e2eb;border-radius:6px;padding:6px;margin-top:6px;white-space:pre-wrap}.hidden{display:none!important}
     </style>
-    <section class="panel"><header><strong>EMS 制单助手 <span class="version">v2.0.6</span></strong><button id="collapse" title="收起／展开">−</button></header><main id="main">
+    <section class="panel"><header><strong>EMS 制单助手 <span class="version">v2.0.7</span></strong><button id="collapse" title="收起／展开">−</button></header><main id="main">
       <label>粘贴收件信息（顺序不限；国外建议用 Address / CONTACT / Telephone）<textarea id="raw" placeholder="Address: Chommany Village, Xaysettha District, Vientiane Capital, Lao PDR&#10;CONTACT: Xonthichack RATTANA(TR)&#10;Telephone: 00856 20 88782889"></textarea></label>
       <div class="actions"><button class="action" id="parse">识别地址</button><button class="action" id="clear">清空地址</button></div>
       <details open><summary>收件信息预览</summary><div class="grid">
