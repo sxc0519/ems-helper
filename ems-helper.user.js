@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         日本邮便 EMS 制单助手
+// @name         Japan Post EMS Helper
 // @namespace    local.ems.helper
-// @version      2.0.12
-// @description  中外地址自由解析，多包裹队列，自动编号、填单并下载 PDF。
+// @version      2.0.13
+// @description  EMS address, parcel and PDF helper.
 // @match        https://www.int-mypage.post.japanpost.jp/mypage/*.do
 // @updateURL    https://raw.githubusercontent.com/sxc0519/ems-helper/main/ems-helper.user.js
 // @downloadURL  https://raw.githubusercontent.com/sxc0519/ems-helper/main/ems-helper.user.js
@@ -645,4 +645,71 @@ function fileName(tracking) { if (!/^[A-Z]{2}\d{9}[A-Z]{2}$/.test(tracking)) thr
   updateActions();
   /* TEST_HOOK */
   if (['fill', 'generate'].includes(state.phase)) setTimeout(advance, 400);
+
+  // v2.0.13: the item-entry screen is dynamically rebuilt by Japan Post.
+  // Keep the helper mounted when that rebuild removes its host node.
+  const resilientHost = document.getElementById('ems-helper-panel');
+  if (resilientHost) new MutationObserver(() => {
+    if (!resilientHost.isConnected) document.documentElement.append(resilientHost);
+  }).observe(document.documentElement, { childList: true, subtree: true });
+
+  // A package may contain several medicines. PACKAGE / ?? headings group
+  // subsequent item lines; without a heading, each line remains one parcel.
+  const baseParsePackages = parsePackages;
+  parsePackages = raw => {
+    const sourceLines = String(raw || '').replace(/\r\n?/g, '\n').split('\n').map(line => line.trim()).filter(Boolean);
+    const groups = []; let current = null; let grouped = false;
+    for (const line of sourceLines) {
+      if (/^(?:PACKAGE|PARCEL|\u5305\u88f9)\s*\d*\s*[:\uff1a]?$/i.test(line)) {
+        current = []; groups.push(current); grouped = true; continue;
+      }
+      const itemLine = line.replace(/\s*(?:\u4e00\u4e2a\u5305\u88f9|ONE\s+PARCEL)\s*$/i, '').trim();
+      const parsed = baseParsePackages(itemLine)[0];
+      if (grouped) current.push(parsed); else groups.push([parsed]);
+    }
+    if (!groups.length || groups.some(group => !group.length)) throw new Error('Each package needs at least one item.');
+    return groups.map((items, index) => ({ ...items[0], items, total: items.reduce((sum, item) => sum + item.total, 0), parcelNo: index + 1, parcelTotal: groups.length }));
+  };
+  const baseValidateOrder = validateOrder;
+  validateOrder = order => {
+    const items = Array.isArray(order.items) && order.items.length ? order.items : [order];
+    return items.reduce((sum, item) => sum + baseValidateOrder({ ...order, ...item, items: undefined }), 0);
+  };
+  fillContents = async function () {
+    const order = state.order;
+    const items = Array.isArray(order.items) && order.items.length ? order.items : [order];
+    button('EMS(\u7269\u54c1)').click();
+    await waitFor(() => entryRow(), 'item entry');
+    const existing = contentRows();
+    const matches = new Map(items.map(item => [item.item + '|' + item.price, registeredRow(item)]));
+    if (existing.some(row => !items.some(item => row === registeredRow(item)))) throw new Error('Existing items do not match this package.');
+    for (const item of items) {
+      let row = matches.get(item.item + '|' + item.price);
+      if (!row) {
+        const entry = entryRow(); const cells = [...entry.cells];
+        if (cells.length < 5) throw new Error('Item entry layout was not recognized.');
+        setValue(inputIn(cells[0]), item.item);
+        setValue(inputIn(cells[1]), item.price);
+        selectByText(cells[1].querySelector('select'), 'JPY/\u65e5\u5143');
+        setValue(inputIn(cells[3]), item.quantity);
+        state.lastAction = ''; persist(); button('\u786e\u8ba4').click();
+        row = await waitFor(() => registeredRow(item), 'registered item');
+      }
+      setValue(inputIn(row.cells[3]), item.quantity);
+    }
+    selectCategory(order.category); setTotal(validateOrder(order));
+    if (!state.agreed) throw new Error('Please confirm the declaration.');
+    const check = [...document.querySelectorAll('input[type=checkbox]')].find(el => isVisible(el) && /\u5df2\u786e\u8ba4\u4e0d\u5b58\u5728\u4e0a\u8ff0\u8bb0\u8f7d/.test(el.closest('td')?.textContent || el.parentElement.textContent));
+    setRadio(check);
+    status('Items completed.'); navigate('\u4e0b\u4e00\u9875', 'contents-next');
+  };
+  const quickCalcium = document.createElement('button');
+  quickCalcium.className = 'action'; quickCalcium.id = 'quick-calcium'; quickCalcium.textContent = '\u9ed8\u8ba4\uff1a\u5355\u5305\u9499\u7247';
+  $('parse').parentElement.append(quickCalcium);
+  quickCalcium.onclick = runSafely(() => {
+    readForm(); state.packages = []; state.packageIndex = 0; state.packagesRaw = '';
+    Object.assign(state.order, { item: 'calcium', price: 1200, quantity: 2, category: '\u793c\u54c1', payment: '\u73b0\u91d1\u652f\u4ed8', parcelNo: 1, parcelTotal: 1, items: [{ item: 'calcium', price: 1200, quantity: 2, total: 2400 }] });
+    state.agreed = true; persist(); syncForm(); status('Default calcium parcel loaded.');
+  });
+
 })();
