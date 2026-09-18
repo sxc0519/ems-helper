@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         日本邮便 EMS 制单助手
 // @namespace    local.ems.helper
-// @version      2.0.11
+// @version      2.0.12
 // @description  中外地址自由解析，多包裹队列，自动编号、填单并下载 PDF。
 // @match        https://www.int-mypage.post.japanpost.jp/mypage/*.do
 // @updateURL    https://raw.githubusercontent.com/sxc0519/ems-helper/main/ems-helper.user.js
@@ -133,7 +133,7 @@ function fileName(tracking) { if (!/^[A-Z]{2}\d{9}[A-Z]{2}$/.test(tracking)) thr
   const readJSON = (storage, key, fallback) => { try { return JSON.parse(storage.getItem(key)) || fallback; } catch { return fallback; } };
   const prefs = { ...DEFAULTS, ...readJSON(localStorage, SETTINGS_KEY, {}) };
   let state = readJSON(sessionStorage, SESSION_KEY, null) || {
-    order: { ...prefs, parcelNo: 1, parcelTotal: 1, recipient: { ...EMPTY_RECIPIENT }, raw: '' }, packages: [], packageIndex: 0, packagesRaw: '', phase: 'idle', agreed: false, lastAction: '', status: ''
+    order: { ...prefs, parcelNo: 1, parcelTotal: 1, recipient: { ...EMPTY_RECIPIENT }, raw: '' }, packages: [], packageIndex: 0, packagesRaw: '', phase: 'idle', agreed: true, lastAction: '', status: ''
   };
   state.packages ||= []; state.packageIndex ||= 0; state.packagesRaw ||= '';
   let busy = false;
@@ -444,7 +444,7 @@ function fileName(tracking) { if (!/^[A-Z]{2}\d{9}[A-Z]{2}$/.test(tracking)) thr
       Object.assign(state.order, state.packages[state.packageIndex]);
       state.order.recipient ||= { ...EMPTY_RECIPIENT };
     } else if (!state.packages.length) state.order = { ...prefs, recipient: { ...EMPTY_RECIPIENT }, raw: '' };
-    state.agreed = false;
+    state.agreed = true;
     syncForm();
     const next = hasNext ? ` 下一票已载入：${state.packageIndex + 1}/${state.packages.length}。打印完毕返回菜单后核对并开始。` : '';
     status(`已触发下载：${filename}。保存到浏览器的“下载”文件夹。${next}`);
@@ -506,7 +506,7 @@ function fileName(tracking) { if (!/^[A-Z]{2}\d{9}[A-Z]{2}$/.test(tracking)) thr
       input:focus,select:focus,textarea:focus{outline:2px solid #6da4d4;outline-offset:1px}button.action{border:1px solid #b7cada;border-radius:6px;padding:8px 10px;background:#edf3f8;color:#18324d;cursor:pointer;font-weight:600}button.primary{background:#12619a;border-color:#12619a;color:white}button:disabled{opacity:.45;cursor:default}
       .actions{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0}.hint{color:#60768b;font-size:11px;margin:7px 0}.total{margin:9px 0;padding:8px;background:#edf5fc;border-radius:6px;font-weight:600}.status{white-space:pre-wrap;margin-top:9px;padding:8px;border-radius:6px;background:#f1f5f8;font-size:12px}.error{background:#fff0ed;color:#9f3527}.check{display:flex;gap:7px;margin:9px 0;align-items:flex-start}.check input{width:auto;margin-top:4px}.check span{font-size:11px}details{margin-top:8px}summary{cursor:pointer;font-weight:600;margin-bottom:8px}.queue{font-size:11px;background:#f6f8fa;border:1px solid #d9e2eb;border-radius:6px;padding:6px;margin-top:6px;white-space:pre-wrap}.hidden{display:none!important}
     </style>
-    <section class="panel"><header><strong>EMS 制单助手 <span class="version">v2.0.11</span></strong><button id="collapse" title="收起／展开">−</button></header><main id="main">
+    <section class="panel"><header><strong>EMS 制单助手 <span class="version">v2.0.12</span></strong><button id="collapse" title="收起／展开">−</button></header><main id="main">
       <label>粘贴收件信息（顺序不限；国外建议用 Address / CONTACT / Telephone）<textarea id="raw" placeholder="Address: Chommany Village, Xaysettha District, Vientiane Capital, Lao PDR&#10;CONTACT: Xonthichack RATTANA(TR)&#10;Telephone: 00856 20 88782889"></textarea></label>
       <div class="actions"><button class="action" id="parse">识别地址</button><button class="action" id="clear">清空地址</button></div>
       <details open><summary>收件信息预览</summary><div class="grid">
@@ -561,7 +561,7 @@ function fileName(tracking) { if (!/^[A-Z]{2}\d{9}[A-Z]{2}$/.test(tracking)) thr
     if (!state.packages[index]) throw new Error('包裹编号不存在。');
     state.packageIndex = index;
     Object.assign(state.order, state.packages[index]);
-    state.agreed = false; persist(); syncForm();
+    state.agreed = true; persist(); syncForm();
   }
   function renderQueue() {
     const select = $('package-select'); select.innerHTML = '';
@@ -591,19 +591,19 @@ function fileName(tracking) { if (!/^[A-Z]{2}\d{9}[A-Z]{2}$/.test(tracking)) thr
   function runSafely(fn) { return async () => { try { await fn(); } catch (error) { stop(error.message || String(error), true); } }; }
   $('collapse').onclick = () => { const hidden = $('main').classList.toggle('hidden'); $('footer').classList.toggle('hidden', hidden); $('collapse').textContent = hidden ? '+' : '−'; };
   $('parse').onclick = runSafely(() => {
-    readForm(); state.order.recipient = parseAddress(state.order.raw); state.agreed = false;
+    readForm(); state.order.recipient = parseAddress(state.order.raw); state.agreed = true;
     syncForm(); status('地址已拆分，请核对预览。');
   });
   $('parse-packages').onclick = runSafely(() => {
     readForm(); state.packages = parsePackages(state.packagesRaw); state.packageIndex = 0;
-    Object.assign(state.order, state.packages[0]); state.agreed = false; syncForm();
+    Object.assign(state.order, state.packages[0]); state.agreed = true; syncForm();
     status(`已建立 ${state.packages.length} 个包裹。第三列按“单价”计算；请逐票核对申报总额。`);
   });
   $('package-select').onchange = () => applyPackage(Number($('package-select').value));
   $('clear').onclick = () => {
     state.phase = 'idle'; cancelled = true; state.lastAction = '';
     state.order.recipient = { ...EMPTY_RECIPIENT }; state.order.raw = ''; state.order.parcelNo = 1; state.order.parcelTotal = 1;
-    state.packages = []; state.packageIndex = 0; state.packagesRaw = ''; state.agreed = false;
+    state.packages = []; state.packageIndex = 0; state.packagesRaw = ''; state.agreed = true;
     syncForm(); status('本页地址草稿已清空；网站上的表单未被清除。'); updateActions();
   };
   $('save-defaults').onclick = runSafely(() => {
@@ -636,7 +636,7 @@ function fileName(tracking) { if (!/^[A-Z]{2}\d{9}[A-Z]{2}$/.test(tracking)) thr
   shadow.addEventListener('change', event => {
     if (event.target.matches('input,select,textarea')) {
       if (['fill', 'generate'].includes(state.phase)) stop('已暂停，修改后请重新开始。');
-      if (event.target.id !== 'agree') $('agree').checked = false;
+      if (event.target.id !== 'agree' && state.phase !== 'fill') $('agree').checked = false;
       readForm();
     }
   });
