@@ -291,8 +291,38 @@ function fileName(tracking) { if (!/^[A-Z]{2}\d{9}[A-Z]{2}$/.test(tracking)) thr
       norm(tr.cells[1]?.textContent).replace(/\s+/g, '') === `${order.price}JPY`);
   }
   function entryRow() {
-    const confirm = buttons('确认')[0];
+    const exact = document.querySelector('input[name="item_button12"]');
+    const confirm = exact && isVisible(exact) && !exact.disabled ? exact : buttons('确认')[0];
     return confirm?.closest('tr');
+  }
+  function itemConfirmButton(entry) {
+    const controls = [...entry.querySelectorAll('button,input[type=button],input[type=submit]')]
+      .filter(el => isVisible(el) && !el.disabled && caption(el) === '确认');
+    if (controls.length !== 1) throw new Error('未找到商品输入行唯一的“确认”按钮，请检查页面。');
+    return controls[0];
+  }
+  async function confirmContentItem(entry, item) {
+    const confirm = itemConfirmButton(entry);
+    state.pendingContentItem = { item: item.item, price: item.price, quantity: item.quantity };
+    state.lastAction = ''; persist();
+    let onPageHide;
+    const navigation = new Promise(resolve => {
+      onPageHide = () => resolve(null);
+      window.addEventListener('pagehide', onPageHide, { once: true });
+    });
+    try {
+      confirm.click();
+      // A normal itemAdd2 POST reloads this document. The new script instance
+      // resumes phase=fill and validates the stored pending item before adding more.
+      const row = await Promise.race([
+        waitFor(() => registeredRow(item), '商品确认后的清单；请检查商品行“确认”及网站错误提示', 15000),
+        navigation
+      ]);
+      if (row) { delete state.pendingContentItem; persist(); }
+      return row;
+    } finally {
+      window.removeEventListener('pagehide', onPageHide);
+    }
   }
   function setTotal(total) {
     const row = fieldRow('内容物品总额 （请输入日元）') || [...document.querySelectorAll('tr')].find(tr =>
@@ -744,9 +774,18 @@ function fileName(tracking) { if (!/^[A-Z]{2}\d{9}[A-Z]{2}$/.test(tracking)) thr
   fillContents = async function () {
     const order = state.order;
     const items = Array.isArray(order.items) && order.items.length ? order.items : [order];
-    button('EMS(\u7269\u54c1)').click();
+    const emsImage = document.getElementById('ID_SENDTYPE_IMG_PKG');
+    if (!emsImage || !/\/PKG\.PNG$/i.test(emsImage.getAttribute('src') || '')) button('EMS(\u7269\u54c1)').click();
     await waitFor(() => entryRow(), 'item entry');
     const existing = contentRows();
+    if (state.pendingContentItem) {
+      const pending = state.pendingContentItem;
+      const completed = registeredRow(pending);
+      if (!completed || Number(inputIn(completed.cells[3])?.value) !== pending.quantity) {
+        throw new Error('上次商品“确认”后未找到数量一致的清单条目。请查看网站错误提示或手动确认商品，再点开始；不会自动重复添加。');
+      }
+      delete state.pendingContentItem; persist();
+    }
     const matches = new Map(items.map(item => [item.item + '|' + item.price, registeredRow(item)]));
     if (existing.some(row => !items.some(item => row === registeredRow(item)))) throw new Error('Existing items do not match this package.');
     for (const item of items) {
@@ -758,8 +797,9 @@ function fileName(tracking) { if (!/^[A-Z]{2}\d{9}[A-Z]{2}$/.test(tracking)) thr
         setValue(inputIn(cells[1]), item.price);
         selectByText(cells[1].querySelector('select'), 'JPY/\u65e5\u5143');
         setValue(inputIn(cells[3]), item.quantity);
-        state.lastAction = ''; persist(); button('\u786e\u8ba4').click();
-        row = await waitFor(() => registeredRow(item), 'registered item');
+        status(`正在点击商品行“确认”：${item.item}。页面重载后继续核对。`);
+        row = await confirmContentItem(entry, item);
+        if (!row) return;
       }
       setValue(inputIn(row.cells[3]), item.quantity);
     }
