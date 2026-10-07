@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Japan Post EMS Helper
 // @namespace    local.ems.helper
-// @version      2.0.18
+// @version      2.0.19
 // @description  EMS address, parcel and PDF helper.
 // @match        https://www.int-mypage.post.japanpost.jp/mypage/*.do
 // @updateURL    https://raw.githubusercontent.com/sxc0519/ems-helper/main/ems-helper.user.js
@@ -13,8 +13,8 @@
 
 (() => {
   'use strict';
-  const SCRIPT_VERSION = '2.0.18';
-  const SCRIPT_BUILD = '20261007-batch-completion-1';
+  const SCRIPT_VERSION = '2.0.19';
+  const SCRIPT_BUILD = '20261007-panel-coexistence-1';
   const UPDATE_SOURCE = 'https://raw.githubusercontent.com/sxc0519/ems-helper/main/ems-helper.user.js';
   function compareVersions(left, right) {
     const a = String(left).split('.').map(Number), b = String(right).split('.').map(Number);
@@ -143,15 +143,32 @@ function validateOrder(order) {
 function fileName(tracking) { if (!/^[A-Z]{2}\d{9}[A-Z]{2}$/.test(tracking)) throw new Error('未识别到有效运单号。'); return `${tracking}.pdf`; }
 
 
-  // A browser can briefly run an older userscript during an update. Keep only
-  // the newest panel so its state and actions cannot conflict with the old one.
-  // Use a distinct host ID so legacy observers cannot remove this panel.
-  const PANEL_ID = 'ems-helper-panel-v218';
+  // Old scripts reattach detached panels. Keep their hosts connected but hidden
+  // and inert, so their repair timers do not bring an old visible panel back.
+  const PANEL_ID = 'ems-helper-panel-v219';
   if (document.getElementById(PANEL_ID)) return;
-  const removeLegacyPanels = () => {
-    for (const id of ['ems-helper-panel-v217', 'ems-helper-panel-v216', 'ems-helper-panel-v215', 'ems-helper-panel']) document.getElementById(id)?.remove();
+  const legacyIds = ['ems-helper-panel-v218', 'ems-helper-panel-v217', 'ems-helper-panel-v216', 'ems-helper-panel-v215', 'ems-helper-panel'];
+  const panelVersion = panel => panel.getAttribute('data-ems-helper-version') ||
+    (panel.id.match(/^ems-helper-panel-v2(\d+)$/) ? `2.0.${Number(panel.id.match(/^ems-helper-panel-v2(\d+)$/)[1])}` : '0.0.0');
+  const hasNewerPanel = () => [...document.querySelectorAll('[id^="ems-helper-panel"]')]
+    .some(panel => compareVersions(panelVersion(panel), SCRIPT_VERSION) > 0);
+  if (hasNewerPanel()) return;
+  const versionStyle = document.createElement('style');
+  versionStyle.id = `${PANEL_ID}-style`;
+  versionStyle.textContent = `${legacyIds.map(id => `#${id}`).join(',')}{display:none!important;visibility:hidden!important;pointer-events:none!important}`;
+  document.documentElement.append(versionStyle);
+  const retireLegacyPanels = () => {
+    let found = false;
+    for (const id of legacyIds) {
+      const panel = document.getElementById(id);
+      if (!panel) continue;
+      found = true; panel.hidden = true; panel.inert = true;
+      panel.setAttribute('aria-hidden', 'true');
+      panel.style.setProperty('display', 'none', 'important');
+    }
+    return found;
   };
-  removeLegacyPanels();
+  retireLegacyPanels();
 
   const SETTINGS_KEY = 'ems-helper.settings.v2';
   const SESSION_KEY = 'ems-helper.session.v2';
@@ -583,6 +600,7 @@ function fileName(tracking) { if (!/^[A-Z]{2}\d{9}[A-Z]{2}$/.test(tracking)) thr
 
   const host = document.createElement('div');
   host.id = PANEL_ID;
+  host.setAttribute('data-ems-helper-version', SCRIPT_VERSION);
   document.documentElement.append(host);
   const shadow = host.attachShadow({ mode: 'open' });
   shadow.innerHTML = `
@@ -598,6 +616,7 @@ function fileName(tracking) { if (!/^[A-Z]{2}\d{9}[A-Z]{2}$/.test(tracking)) thr
     <section class="panel"><header><strong>EMS 制单助手 <span class="version">v${SCRIPT_VERSION}</span></strong><button id="collapse" title="收起／展开">−</button></header><main id="main">
       <div class="actions"><button class="action" id="check-update">检查更新</button><button class="action" id="reload-script">重新载入</button><a id="install-update" class="hidden" target="_blank" rel="noopener noreferrer">安装最新版</a></div>
       <div id="update-info" class="hint" aria-live="polite">当前 v${SCRIPT_VERSION} · ${SCRIPT_BUILD}。重新载入会刷新网页；安装更新后再重新载入。</div>
+      <div id="runtime-info" class="hint hidden" aria-live="polite"></div>
       <label>粘贴收件信息（顺序不限；国外建议用 Address / CONTACT / Telephone）<textarea id="raw" placeholder="Address: Chommany Village, Xaysettha District, Vientiane Capital, Lao PDR&#10;CONTACT: Xonthichack RATTANA(TR)&#10;Telephone: 00856 20 88782889"></textarea></label>
       <div class="actions"><button class="action" id="parse">识别地址</button><button class="action" id="clear">清空地址</button></div>
       <details open><summary>收件信息预览</summary><div class="grid">
@@ -628,6 +647,15 @@ function fileName(tracking) { if (!/^[A-Z]{2}\d{9}[A-Z]{2}$/.test(tracking)) thr
     </footer></section>`;
   const $ = id => shadow.getElementById(id);
   const ui = { status: $('status') };
+  function retireAndReportLegacyPanels() {
+    if (retireLegacyPanels()) {
+      $('runtime-info').classList.remove('hidden');
+      $('runtime-info').textContent = '检测到旧版助手面板，已隐藏并禁用其操作，当前使用 v' + SCRIPT_VERSION + '。建议只启用一份 EMS Helper 脚本。';
+    }
+  }
+  retireAndReportLegacyPanels();
+  const panelObserver = new MutationObserver(() => retireAndReportLegacyPanels());
+  panelObserver.observe(document.documentElement, { childList: true });
   $('reload-script').onclick = () => {
     stop('正在重新载入；已暂停自动填单。');
     state.agreed = true; state.lastAction = ''; persist();
@@ -809,7 +837,11 @@ function fileName(tracking) { if (!/^[A-Z]{2}\d{9}[A-Z]{2}$/.test(tracking)) thr
   // removes a panel or when Japan Post rebuilds its page.
   let panelRepairs = 0;
   const repairTimer = setInterval(() => {
-    removeLegacyPanels();
+    if (hasNewerPanel()) {
+      host.hidden = true; host.inert = true; cancelled = true;
+      clearInterval(repairTimer); panelObserver.disconnect(); return;
+    }
+    retireAndReportLegacyPanels();
     if (host.isConnected) return;
     if (document.getElementById(host.id) || panelRepairs >= 3) {
       clearInterval(repairTimer); return;
@@ -817,7 +849,7 @@ function fileName(tracking) { if (!/^[A-Z]{2}\d{9}[A-Z]{2}$/.test(tracking)) thr
     panelRepairs += 1;
     document.documentElement.append(host);
   }, 1000);
-  window.addEventListener('pagehide', () => clearInterval(repairTimer), { once: true });
+  window.addEventListener('pagehide', () => { clearInterval(repairTimer); panelObserver.disconnect(); }, { once: true });
 
   // A package may contain several medicines. PACKAGE / ?? headings group
   // subsequent item lines; without a heading, each line remains one parcel.
