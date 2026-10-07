@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Japan Post EMS Helper
 // @namespace    local.ems.helper
-// @version      2.0.14
+// @version      2.0.15
 // @description  EMS address, parcel and PDF helper.
 // @match        https://www.int-mypage.post.japanpost.jp/mypage/*.do
 // @updateURL    https://raw.githubusercontent.com/sxc0519/ems-helper/main/ems-helper.user.js
@@ -124,7 +124,8 @@ function fileName(tracking) { if (!/^[A-Z]{2}\d{9}[A-Z]{2}$/.test(tracking)) thr
 
   // A browser can briefly run an older userscript during an update. Keep only
   // the newest panel so its state and actions cannot conflict with the old one.
-  document.getElementById('ems-helper-panel')?.remove();
+  // Use a distinct host ID so legacy observers cannot remove this panel.
+  if (document.getElementById('ems-helper-panel-v215')) return;
 
   const SETTINGS_KEY = 'ems-helper.settings.v2';
   const SESSION_KEY = 'ems-helper.session.v2';
@@ -488,13 +489,8 @@ function fileName(tracking) { if (!/^[A-Z]{2}\d{9}[A-Z]{2}$/.test(tracking)) thr
   }
 
   const host = document.createElement('div');
-  host.id = 'ems-helper-panel';
+  host.id = 'ems-helper-panel-v215';
   document.documentElement.append(host);
-  // If a stale copy is injected after this script, remove that duplicate and
-  // keep this version's panel and state authoritative.
-  new MutationObserver(() => {
-    document.querySelectorAll('#ems-helper-panel').forEach(panel => { if (panel !== host) panel.remove(); });
-  }).observe(document.documentElement, { childList: true, subtree: true });
   const shadow = host.attachShadow({ mode: 'open' });
   shadow.innerHTML = `
     <style>
@@ -506,7 +502,7 @@ function fileName(tracking) { if (!/^[A-Z]{2}\d{9}[A-Z]{2}$/.test(tracking)) thr
       input:focus,select:focus,textarea:focus{outline:2px solid #6da4d4;outline-offset:1px}button.action{border:1px solid #b7cada;border-radius:6px;padding:8px 10px;background:#edf3f8;color:#18324d;cursor:pointer;font-weight:600}button.primary{background:#12619a;border-color:#12619a;color:white}button:disabled{opacity:.45;cursor:default}
       .actions{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0}.hint{color:#60768b;font-size:11px;margin:7px 0}.total{margin:9px 0;padding:8px;background:#edf5fc;border-radius:6px;font-weight:600}.status{white-space:pre-wrap;margin-top:9px;padding:8px;border-radius:6px;background:#f1f5f8;font-size:12px}.error{background:#fff0ed;color:#9f3527}.check{display:flex;gap:7px;margin:9px 0;align-items:flex-start}.check input{width:auto;margin-top:4px}.check span{font-size:11px}details{margin-top:8px}summary{cursor:pointer;font-weight:600;margin-bottom:8px}.queue{font-size:11px;background:#f6f8fa;border:1px solid #d9e2eb;border-radius:6px;padding:6px;margin-top:6px;white-space:pre-wrap}.hidden{display:none!important}
     </style>
-    <section class="panel"><header><strong>EMS 制单助手 <span class="version">v2.0.12</span></strong><button id="collapse" title="收起／展开">−</button></header><main id="main">
+    <section class="panel"><header><strong>EMS 制单助手 <span class="version">v2.0.15</span></strong><button id="collapse" title="收起／展开">−</button></header><main id="main">
       <label>粘贴收件信息（顺序不限；国外建议用 Address / CONTACT / Telephone）<textarea id="raw" placeholder="Address: Chommany Village, Xaysettha District, Vientiane Capital, Lao PDR&#10;CONTACT: Xonthichack RATTANA(TR)&#10;Telephone: 00856 20 88782889"></textarea></label>
       <div class="actions"><button class="action" id="parse">识别地址</button><button class="action" id="clear">清空地址</button></div>
       <details open><summary>收件信息预览</summary><div class="grid">
@@ -646,12 +642,18 @@ function fileName(tracking) { if (!/^[A-Z]{2}\d{9}[A-Z]{2}$/.test(tracking)) thr
   /* TEST_HOOK */
   if (['fill', 'generate'].includes(state.phase)) setTimeout(advance, 400);
 
-  // v2.0.13: the item-entry screen is dynamically rebuilt by Japan Post.
-  // Keep the helper mounted when that rebuild removes its host node.
-  const resilientHost = document.getElementById('ems-helper-panel');
-  if (resilientHost) new MutationObserver(() => {
-    if (!resilientHost.isConnected) document.documentElement.append(resilientHost);
-  }).observe(document.documentElement, { childList: true, subtree: true });
+  // Bounded timer avoids an observer feedback loop when another script
+  // removes a panel or when Japan Post rebuilds its page.
+  let panelRepairs = 0;
+  const repairTimer = setInterval(() => {
+    if (host.isConnected) return;
+    if (document.getElementById(host.id) || panelRepairs >= 3) {
+      clearInterval(repairTimer); return;
+    }
+    panelRepairs += 1;
+    document.documentElement.append(host);
+  }, 1000);
+  window.addEventListener('pagehide', () => clearInterval(repairTimer), { once: true });
 
   // A package may contain several medicines. PACKAGE / ?? headings group
   // subsequent item lines; without a heading, each line remains one parcel.
