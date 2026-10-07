@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Japan Post EMS Helper
 // @namespace    local.ems.helper
-// @version      2.0.16
+// @version      2.0.17
 // @description  EMS address, parcel and PDF helper.
 // @match        https://www.int-mypage.post.japanpost.jp/mypage/*.do
 // @updateURL    https://raw.githubusercontent.com/sxc0519/ems-helper/main/ems-helper.user.js
@@ -13,6 +13,25 @@
 
 (() => {
   'use strict';
+  const SCRIPT_VERSION = '2.0.17';
+  const SCRIPT_BUILD = '20261007-update-controls-1';
+  const UPDATE_SOURCE = 'https://raw.githubusercontent.com/sxc0519/ems-helper/main/ems-helper.user.js';
+  function compareVersions(left, right) {
+    const a = String(left).split('.').map(Number), b = String(right).split('.').map(Number);
+    for (let i = 0; i < Math.max(a.length, b.length); i++) {
+      const delta = (a[i] || 0) - (b[i] || 0);
+      if (delta) return Math.sign(delta);
+    }
+    return 0;
+  }
+  function releaseFromSource(source) {
+    if (!/^\/\/\s*@name\s+Japan Post EMS Helper\s*$/m.test(source) ||
+        !/^\/\/\s*@namespace\s+local\.ems\.helper\s*$/m.test(source)) throw new Error('更新源不是 EMS Helper 脚本。');
+    const version = source.match(/^\/\/\s*@version\s+(\d+(?:\.\d+)+)\s*$/m)?.[1];
+    const build = source.match(/^\s*const SCRIPT_BUILD = '([^']+)';/m)?.[1] || '';
+    if (!version) throw new Error('更新源没有有效版本号。');
+    return { version, build };
+  }
   function cleanText(value) {
   return String(value || '').replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCodePoint(parseInt(n, 16)))
     .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n))).replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&')
@@ -127,10 +146,10 @@ function fileName(tracking) { if (!/^[A-Z]{2}\d{9}[A-Z]{2}$/.test(tracking)) thr
   // A browser can briefly run an older userscript during an update. Keep only
   // the newest panel so its state and actions cannot conflict with the old one.
   // Use a distinct host ID so legacy observers cannot remove this panel.
-  const PANEL_ID = 'ems-helper-panel-v216';
+  const PANEL_ID = 'ems-helper-panel-v217';
   if (document.getElementById(PANEL_ID)) return;
   const removeLegacyPanels = () => {
-    for (const id of ['ems-helper-panel-v215', 'ems-helper-panel']) document.getElementById(id)?.remove();
+    for (const id of ['ems-helper-panel-v216', 'ems-helper-panel-v215', 'ems-helper-panel']) document.getElementById(id)?.remove();
   };
   removeLegacyPanels();
 
@@ -145,10 +164,10 @@ function fileName(tracking) { if (!/^[A-Z]{2}\d{9}[A-Z]{2}$/.test(tracking)) thr
   };
   state.packages ||= []; state.packageIndex ||= 0; state.packagesRaw ||= '';
   // Review declarations again after upgrading; do not resume an old run.
-  if (state.scriptVersion !== '2.0.16-fixed') {
+  if (state.scriptVersion !== SCRIPT_BUILD) {
     state.phase = 'idle'; state.agreed = false; state.lastAction = '';
     delete state.order.customsFormal; delete state.order.customsDelegated;
-    state.scriptVersion = '2.0.16-fixed';
+    state.scriptVersion = SCRIPT_BUILD;
   }
   let busy = false;
   let cancelled = false;
@@ -553,7 +572,9 @@ function fileName(tracking) { if (!/^[A-Z]{2}\d{9}[A-Z]{2}$/.test(tracking)) thr
       input:focus,select:focus,textarea:focus{outline:2px solid #6da4d4;outline-offset:1px}button.action{border:1px solid #b7cada;border-radius:6px;padding:8px 10px;background:#edf3f8;color:#18324d;cursor:pointer;font-weight:600}button.primary{background:#12619a;border-color:#12619a;color:white}button:disabled{opacity:.45;cursor:default}
       .actions{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0}.hint{color:#60768b;font-size:11px;margin:7px 0}.total{margin:9px 0;padding:8px;background:#edf5fc;border-radius:6px;font-weight:600}.status{white-space:pre-wrap;margin-top:9px;padding:8px;border-radius:6px;background:#f1f5f8;font-size:12px}.error{background:#fff0ed;color:#9f3527}.check{display:flex;gap:7px;margin:9px 0;align-items:flex-start}.check input{width:auto;margin-top:4px}.check span{font-size:11px}details{margin-top:8px}summary{cursor:pointer;font-weight:600;margin-bottom:8px}.queue{font-size:11px;background:#f6f8fa;border:1px solid #d9e2eb;border-radius:6px;padding:6px;margin-top:6px;white-space:pre-wrap}.hidden{display:none!important}
     </style>
-    <section class="panel"><header><strong>EMS 制单助手 <span class="version">v2.0.16</span></strong><button id="collapse" title="收起／展开">−</button></header><main id="main">
+    <section class="panel"><header><strong>EMS 制单助手 <span class="version">v${SCRIPT_VERSION}</span></strong><button id="collapse" title="收起／展开">−</button></header><main id="main">
+      <div class="actions"><button class="action" id="check-update">检查更新</button><button class="action" id="reload-script">重新载入</button><a id="install-update" class="hidden" target="_blank" rel="noopener noreferrer">安装最新版</a></div>
+      <div id="update-info" class="hint" aria-live="polite">当前 v${SCRIPT_VERSION} · ${SCRIPT_BUILD}。重新载入会刷新网页；安装更新后再重新载入。</div>
       <label>粘贴收件信息（顺序不限；国外建议用 Address / CONTACT / Telephone）<textarea id="raw" placeholder="Address: Chommany Village, Xaysettha District, Vientiane Capital, Lao PDR&#10;CONTACT: Xonthichack RATTANA(TR)&#10;Telephone: 00856 20 88782889"></textarea></label>
       <div class="actions"><button class="action" id="parse">识别地址</button><button class="action" id="clear">清空地址</button></div>
       <details open><summary>收件信息预览</summary><div class="grid">
@@ -584,6 +605,41 @@ function fileName(tracking) { if (!/^[A-Z]{2}\d{9}[A-Z]{2}$/.test(tracking)) thr
     </footer></section>`;
   const $ = id => shadow.getElementById(id);
   const ui = { status: $('status') };
+  $('reload-script').onclick = () => {
+    stop('正在重新载入；已暂停自动填单。');
+    state.agreed = false; state.lastAction = ''; persist();
+    location.reload();
+  };
+  $('check-update').onclick = async () => {
+    const control = $('check-update'), info = $('update-info'), install = $('install-update');
+    control.disabled = true; install.classList.add('hidden');
+    info.textContent = `当前 v${SCRIPT_VERSION}。正在检查 GitHub 最新版本…`;
+    const url = `${UPDATE_SOURCE}?ems_update=${Date.now()}`;
+    install.href = url;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 10000);
+    try {
+      const response = await fetch(url, { cache: 'no-store', credentials: 'omit', signal: controller.signal });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const source = await response.text();
+      if (source.length > 1000000) throw new Error('更新文件过大。');
+      const release = releaseFromSource(source);
+      const newer = compareVersions(release.version, SCRIPT_VERSION);
+      if (newer > 0 || (newer === 0 && release.build && release.build !== SCRIPT_BUILD)) {
+        install.classList.remove('hidden');
+        info.textContent = `当前 v${SCRIPT_VERSION}；发现更新 v${release.version}。点击“安装最新版”，在脚本管理器完成安装后，回到这里点“重新载入”。`;
+      } else if (newer === 0 && release.build === SCRIPT_BUILD) {
+        info.textContent = `已确认是最新版 v${SCRIPT_VERSION}（${SCRIPT_BUILD}）。检查时间：${new Date().toLocaleTimeString()}。`;
+      } else {
+        info.textContent = `更新源返回 v${release.version}，尚未确认与当前版本一致。请稍后再检查。`;
+      }
+    } catch (error) {
+      install.classList.remove('hidden');
+      info.textContent = `无法确认最新版本：${error.name === 'AbortError' ? '检查超时' : error.message}。可点击“安装最新版”手动检查；安装后再重新载入。`;
+    } finally {
+      clearTimeout(timer); control.disabled = false;
+    }
+  };
   function syncForm() {
     for (const key of Object.keys(EMPTY_RECIPIENT)) $(key).value = state.order.recipient[key] || '';
     for (const key of Object.keys(DEFAULTS)) $(key).value = state.order[key] ?? DEFAULTS[key];
@@ -715,7 +771,7 @@ function fileName(tracking) { if (!/^[A-Z]{2}\d{9}[A-Z]{2}$/.test(tracking)) thr
     }
   });
   syncForm();
-  ui.status.textContent = state.status || '已加载 v2.0.16。粘贴收件地址后点击“识别地址”，填写申报信息并核对后勾选声明。';
+  ui.status.textContent = state.status || `已加载 v${SCRIPT_VERSION}。粘贴收件地址后点击“识别地址”，填写申报信息并核对后勾选声明。`;
   updateActions();
   /* TEST_HOOK */
   if (['fill', 'generate'].includes(state.phase)) setTimeout(advance, 400);
