@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Japan Post EMS Helper
 // @namespace    local.ems.helper
-// @version      2.0.13
+// @version      2.0.14
 // @description  EMS address, parcel and PDF helper.
 // @match        https://www.int-mypage.post.japanpost.jp/mypage/*.do
 // @updateURL    https://raw.githubusercontent.com/sxc0519/ems-helper/main/ems-helper.user.js
@@ -711,5 +711,32 @@ function fileName(tracking) { if (!/^[A-Z]{2}\d{9}[A-Z]{2}$/.test(tracking)) thr
     Object.assign(state.order, { item: 'calcium', price: 1200, quantity: 2, category: '\u793c\u54c1', payment: '\u73b0\u91d1\u652f\u4ed8', parcelNo: 1, parcelTotal: 1, items: [{ item: 'calcium', price: 1200, quantity: 2, total: 2400 }] });
     state.agreed = true; persist(); syncForm(); status('Default calcium parcel loaded.');
   });
+
+
+  // v2.0.14: accept the common labeled Chinese address format.
+  const baseParseAddressV214 = parseAddress;
+  parseAddress = raw => {
+    const text = cleanText(raw);
+    const lines = text.split('\n').map(line => line.trim()).filter(Boolean);
+    const take = pattern => lines.map(line => line.match(pattern)).find(Boolean)?.[1]?.trim() || '';
+    const name = take(/^(?:\u6536\u4ef6\u4eba|\u6536\u4ef6\u4eba\u59d3\u540d|\u59d3\u540d)\s*[:\uff1a]\s*(.+)$/);
+    const phoneRaw = take(/^(?:\u624b\u673a(?:\u53f7\u7801)?|\u8054\u7cfb\u7535\u8bdd|\u7535\u8bdd)\s*[:\uff1a]\s*(.+)$/);
+    const region = take(/^(?:\u6240\u5728\u5730\u533a|\u5730\u533a)\s*[:\uff1a]\s*(.+)$/);
+    const detail = take(/^(?:\u8be6\u7ec6\u5730\u5740|\u8857\u9053\u5730\u5740|\u5730\u5740)\s*[:\uff1a]\s*(.+)$/);
+    if (!(name && phoneRaw && region && detail)) return baseParseAddressV214(raw);
+    const phone = normalizePhone(phoneRaw);
+    const compact = region.replace(/\s+/g, '');
+    const provinceMatch = compact.match(/^(.*?(?:\u7701|\u81ea\u6cbb\u533a|\u7279\u522b\u884c\u653f\u533a|\u5e02))/);
+    if (!provinceMatch) throw new Error('Chinese region needs a province or municipality.');
+    const province = provinceMatch[1]; let rest = compact.slice(province.length);
+    const cityMatch = rest.match(/^(.*?(?:\u5e02|\u81ea\u6cbb\u5dde|\u5730\u533a|\u76df))/);
+    const cityMain = cityMatch ? cityMatch[1] : '';
+    rest = cityMatch ? rest.slice(cityMain.length) : rest;
+    const districtMatch = rest.match(/^(.*?(?:\u533a|\u53bf|\u65d7|\u5e02))/);
+    const district = districtMatch ? districtMatch[1] : '';
+    rest = districtMatch ? rest.slice(district.length) : rest;
+    const city = (cityMain + district).trim() || province;
+    return { name, phone, country: 'CHINA', province, city, address1: rest || detail, address2: detail, postal: '' };
+  };
 
 })();
