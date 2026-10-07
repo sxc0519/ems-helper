@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Japan Post EMS Helper
 // @namespace    local.ems.helper
-// @version      2.0.17
+// @version      2.0.18
 // @description  EMS address, parcel and PDF helper.
 // @match        https://www.int-mypage.post.japanpost.jp/mypage/*.do
 // @updateURL    https://raw.githubusercontent.com/sxc0519/ems-helper/main/ems-helper.user.js
@@ -13,8 +13,8 @@
 
 (() => {
   'use strict';
-  const SCRIPT_VERSION = '2.0.17';
-  const SCRIPT_BUILD = '20261007-update-controls-1';
+  const SCRIPT_VERSION = '2.0.18';
+  const SCRIPT_BUILD = '20261007-batch-completion-1';
   const UPDATE_SOURCE = 'https://raw.githubusercontent.com/sxc0519/ems-helper/main/ems-helper.user.js';
   function compareVersions(left, right) {
     const a = String(left).split('.').map(Number), b = String(right).split('.').map(Number);
@@ -146,10 +146,10 @@ function fileName(tracking) { if (!/^[A-Z]{2}\d{9}[A-Z]{2}$/.test(tracking)) thr
   // A browser can briefly run an older userscript during an update. Keep only
   // the newest panel so its state and actions cannot conflict with the old one.
   // Use a distinct host ID so legacy observers cannot remove this panel.
-  const PANEL_ID = 'ems-helper-panel-v217';
+  const PANEL_ID = 'ems-helper-panel-v218';
   if (document.getElementById(PANEL_ID)) return;
   const removeLegacyPanels = () => {
-    for (const id of ['ems-helper-panel-v216', 'ems-helper-panel-v215', 'ems-helper-panel']) document.getElementById(id)?.remove();
+    for (const id of ['ems-helper-panel-v217', 'ems-helper-panel-v216', 'ems-helper-panel-v215', 'ems-helper-panel']) document.getElementById(id)?.remove();
   };
   removeLegacyPanels();
 
@@ -160,12 +160,18 @@ function fileName(tracking) { if (!/^[A-Z]{2}\d{9}[A-Z]{2}$/.test(tracking)) thr
   const readJSON = (storage, key, fallback) => { try { return JSON.parse(storage.getItem(key)) || fallback; } catch { return fallback; } };
   const prefs = { ...DEFAULTS, ...readJSON(localStorage, SETTINGS_KEY, {}) };
   let state = readJSON(sessionStorage, SESSION_KEY, null) || {
-    order: { ...prefs, parcelNo: 1, parcelTotal: 1, recipient: { ...EMPTY_RECIPIENT }, raw: '' }, packages: [], packageIndex: 0, packagesRaw: '', phase: 'idle', agreed: false, lastAction: '', status: ''
+    order: { ...prefs, parcelNo: 1, parcelTotal: 1, recipient: { ...EMPTY_RECIPIENT }, raw: '' }, packages: [], packageIndex: 0, packagesRaw: '', phase: 'idle', agreed: true, lastAction: '', status: ''
   };
   state.packages ||= []; state.packageIndex ||= 0; state.packagesRaw ||= '';
-  // Review declarations again after upgrading; do not resume an old run.
+  const restoreCompletedBatch = state.phase === 'done' && state.packages.length > 0 &&
+    state.packageIndex === state.packages.length - 1 && state.tracking && state.tracking === state.downloadedTracking;
+  if (state.scriptVersion !== SCRIPT_BUILD && state.downloadedTracking && state.tracking === state.downloadedTracking &&
+      !state.packages.some(parcel => parcel.completed)) {
+    for (let i = 0; i < state.packageIndex; i++) state.packages[i].completed = true;
+  }
+  // Pause an old run after upgrading. The user requested a checked declaration by default.
   if (state.scriptVersion !== SCRIPT_BUILD) {
-    state.phase = 'idle'; state.agreed = false; state.lastAction = '';
+    state.phase = 'idle'; state.agreed = true; state.lastAction = '';
     delete state.order.customsFormal; delete state.order.customsDelegated;
     state.scriptVersion = SCRIPT_BUILD;
   }
@@ -490,6 +496,37 @@ function fileName(tracking) { if (!/^[A-Z]{2}\d{9}[A-Z]{2}$/.test(tracking)) thr
   function trackingNumber() {
     return document.body.innerText.match(/\b[A-Z]{2}\d{9}JP\b/)?.[0];
   }
+  function finishParcel(tracking) {
+    state.phase = 'done'; state.tracking = tracking; state.downloadedTracking = tracking;
+    state.registrationPending = false; state.lastAction = ''; delete state.pendingContentItem;
+    const count = state.packages.length || 1;
+    const current = state.packages[state.packageIndex];
+    if (current) { current.completed = true; current.tracking = tracking; }
+    const nextIndex = state.packages.findIndex(parcel => !parcel.completed);
+    if (nextIndex >= 0) {
+      state.packageIndex = nextIndex;
+      Object.assign(state.order, state.packages[nextIndex]);
+      delete state.order.customsFormal; delete state.order.customsDelegated;
+      state.batchComplete = false; state.agreed = true;
+      persist(); syncForm();
+      status(`已触发下载：${tracking}.pdf。下一票已载入：${nextIndex + 1}/${count}。返回菜单后开始。`);
+    } else {
+      state.completedBatch = { count, finishedAt: new Date().toISOString(), lastTracking: tracking };
+      state.batchComplete = true; cancelled = true;
+      state.packages = []; state.packageIndex = 0; state.packagesRaw = '';
+      // Clear all shipment content, even if old item values were saved as defaults.
+      state.order = { ...DEFAULTS, sender: prefs.sender || DEFAULTS.sender,
+        recipient: { ...EMPTY_RECIPIENT }, raw: '', parcelNo: 1, parcelTotal: 1 };
+      state.agreed = true; persist(); syncForm();
+      status(`本批次已完成，共 ${count} 个包裹。最后一票 ${tracking}.pdf 已触发下载；收件信息、商品和包裹队列已清空。可输入下一批数据。`);
+    }
+    updateActions();
+  }
+  function assertParcelNotCompleted() {
+    if (state.batchComplete || state.packages[state.packageIndex]?.completed) {
+      throw new Error('该包裹或本批次已完成，请输入新的包裹数据；不能重复运行已完成的包裹。');
+    }
+  }
   async function downloadPDF() {
     const frame = pdfFrame();
     if (!frame) throw new Error('PDF 尚未生成；请等待网页加载。');
@@ -509,21 +546,7 @@ function fileName(tracking) { if (!/^[A-Z]{2}\d{9}[A-Z]{2}$/.test(tracking)) thr
     link.href = objectURL; link.download = filename;
     link.style.display = 'none'; document.body.append(link); link.click(); link.remove();
     setTimeout(() => URL.revokeObjectURL(objectURL), 60000);
-    state.phase = 'done'; state.tracking = tracking; state.downloadedTracking = tracking; state.registrationPending = false;
-    const hasNext = state.packages.length && state.packageIndex < state.packages.length - 1;
-    if (hasNext) {
-      state.packageIndex += 1;
-      Object.assign(state.order, state.packages[state.packageIndex]);
-      delete state.order.customsFormal; delete state.order.customsDelegated;
-      state.order.recipient ||= { ...EMPTY_RECIPIENT };
-    } else if (!state.packages.length) state.order = { ...prefs, recipient: { ...EMPTY_RECIPIENT }, raw: '' };
-    state.agreed = false;
-    syncForm();
-    const next = hasNext ? ` 下一票已载入：${state.packageIndex + 1}/${state.packages.length}。打印完毕返回菜单后核对并开始。` : '';
-    status(`已触发下载：${filename}。保存到浏览器的“下载”文件夹。${next}`);
-    // The print page must return to the menu before the next parcel starts.
-    // Leave the next parcel loaded for an explicit start after review.
-    updateActions();
+    finishParcel(tracking);
   }
   async function advance() {
     if (busy || !['fill', 'generate'].includes(state.phase)) return;
@@ -607,7 +630,7 @@ function fileName(tracking) { if (!/^[A-Z]{2}\d{9}[A-Z]{2}$/.test(tracking)) thr
   const ui = { status: $('status') };
   $('reload-script').onclick = () => {
     stop('正在重新载入；已暂停自动填单。');
-    state.agreed = false; state.lastAction = ''; persist();
+    state.agreed = true; state.lastAction = ''; persist();
     location.reload();
   };
   $('check-update').onclick = async () => {
@@ -648,6 +671,7 @@ function fileName(tracking) { if (!/^[A-Z]{2}\d{9}[A-Z]{2}$/.test(tracking)) thr
     $('agree').checked = !!state.agreed;
     renderQueue();
     updateTotal();
+    updateActions();
   }
   function readForm() {
     const recipient = {};
@@ -672,23 +696,24 @@ function fileName(tracking) { if (!/^[A-Z]{2}\d{9}[A-Z]{2}$/.test(tracking)) thr
     }
     state.packagesRaw = $('packages-raw').value;
     state.agreed = $('agree').checked;
-    persist(); renderQueue(); updateTotal();
+    persist(); renderQueue(); updateTotal(); updateActions();
   }
   function applyPackage(index) {
     if (!state.packages[index]) throw new Error('包裹编号不存在。');
+    if (state.packages[index].completed) { status('此包裹已完成，不能重复运行。', true); return; }
     state.packageIndex = index;
     Object.assign(state.order, state.packages[index]);
     delete state.order.customsFormal; delete state.order.customsDelegated;
-    state.agreed = false; persist(); syncForm();
+    state.agreed = true; persist(); syncForm();
   }
   function renderQueue() {
     const select = $('package-select'); select.innerHTML = '';
     if (!state.packages.length) {
-      $('queue').textContent = '尚未建立队列；可继续使用下方单包裹设置。';
+      $('queue').textContent = state.batchComplete ? `本批次已完成，共 ${state.completedBatch?.count || 1} 个包裹，队列已清空。` : '尚未建立队列；可继续使用下方单包裹设置。';
       $('parcel-number').textContent = '单包裹'; return;
     }
     state.packages.forEach((p, i) => {
-      const option = document.createElement('option'); option.value = String(i); option.textContent = `${i + 1}/${state.packages.length} ${p.item}`; select.append(option);
+      const option = document.createElement('option'); option.value = String(i); option.textContent = `${i + 1}/${state.packages.length} ${p.item}${p.completed ? '（已完成）' : ''}`; option.disabled = !!p.completed; select.append(option);
     });
     select.value = String(state.packageIndex);
     $('queue').textContent = state.packages.map((p, i) => {
@@ -711,18 +736,19 @@ function fileName(tracking) { if (!/^[A-Z]{2}\d{9}[A-Z]{2}$/.test(tracking)) thr
     $('generate').classList.toggle('hidden', !reviewing);
     $('start').classList.toggle('hidden', reviewing);
     $('download').classList.toggle('hidden', !pdfFrame());
-    $('start').disabled = ['fill', 'generate'].includes(state.phase);
-    $('generate').disabled = state.phase === 'generate' || !!state.registrationPending;
+    $('start').disabled = ['fill', 'generate'].includes(state.phase) || !!state.batchComplete;
+    $('generate').disabled = state.phase === 'generate' || !!state.registrationPending || !!state.batchComplete;
   }
   function runSafely(fn) { return async () => { try { await fn(); } catch (error) { stop(error.message || String(error), true); } }; }
   $('collapse').onclick = () => { const hidden = $('main').classList.toggle('hidden'); $('footer').classList.toggle('hidden', hidden); $('collapse').textContent = hidden ? '+' : '−'; };
   $('parse').onclick = runSafely(() => {
-    readForm(); state.order.recipient = parseAddress(state.order.raw); state.agreed = false;
+    readForm(); state.order.recipient = parseAddress(state.order.raw); state.agreed = true;
     syncForm(); status('地址已拆分，请核对预览。');
   });
   $('parse-packages').onclick = runSafely(() => {
     readForm(); state.packages = parsePackages(state.packagesRaw); state.packageIndex = 0;
-    Object.assign(state.order, state.packages[0]); state.agreed = false; syncForm();
+    state.batchComplete = false;
+    Object.assign(state.order, state.packages[0]); state.agreed = true; syncForm();
     delete state.order.customsFormal; delete state.order.customsDelegated;
     status(`已建立 ${state.packages.length} 个包裹。第三列按“单价”计算；请逐票核对申报总额。`);
   });
@@ -730,7 +756,7 @@ function fileName(tracking) { if (!/^[A-Z]{2}\d{9}[A-Z]{2}$/.test(tracking)) thr
   $('clear').onclick = () => {
     state.phase = 'idle'; cancelled = true; state.lastAction = '';
     state.order.recipient = { ...EMPTY_RECIPIENT }; state.order.raw = ''; state.order.parcelNo = 1; state.order.parcelTotal = 1;
-    state.packages = []; state.packageIndex = 0; state.packagesRaw = ''; state.agreed = false;
+    state.packages = []; state.packageIndex = 0; state.packagesRaw = ''; state.agreed = true;
     delete state.order.items; delete state.order.total; delete state.order.customsFormal; delete state.order.customsDelegated;
     syncForm(); status('本页地址草稿已清空；网站上的表单未被清除。'); updateActions();
   };
@@ -742,6 +768,7 @@ function fileName(tracking) { if (!/^[A-Z]{2}\d{9}[A-Z]{2}$/.test(tracking)) thr
     status('默认寄件人和申报值已保存在本机；每票可修改。收件人资料不会保存为默认值。');
   });
   $('start').onclick = runSafely(async () => {
+    assertParcelNotCompleted();
     readForm();
     if (!state.order.recipient.name && state.order.raw) { state.order.recipient = parseAddress(state.order.raw); syncForm(); }
     validateOrder(state.order);
@@ -753,6 +780,7 @@ function fileName(tracking) { if (!/^[A-Z]{2}\d{9}[A-Z]{2}$/.test(tracking)) thr
   });
   $('stop').onclick = () => stop('已暂停。可以修改后继续，或直接操作网站。');
   $('generate').onclick = runSafely(() => {
+    assertParcelNotCompleted();
     readForm(); validateOrder(state.order); verifyReview();
     if (!state.agreed) throw new Error('请确认本票数据及危险物品声明。');
     if (state.phase === 'generate' || state.registrationPending) throw new Error('生成请求已经发出，请勿重复点击。');
@@ -765,7 +793,8 @@ function fileName(tracking) { if (!/^[A-Z]{2}\d{9}[A-Z]{2}$/.test(tracking)) thr
     if (event.target.matches('input,select,textarea')) {
       if (['fill', 'generate'].includes(state.phase)) stop('已暂停，修改后请重新开始。');
       if (event.target.id !== 'agree') {
-        $('agree').checked = false; delete state.order.customsFormal; delete state.order.customsDelegated;
+        $('agree').checked = true; delete state.order.customsFormal; delete state.order.customsDelegated;
+        if (['raw','name','phone','province','city','address1','address2','postal','packages-raw','item','price','quantity'].includes(event.target.id)) state.batchComplete = false;
       }
       readForm();
     }
@@ -870,8 +899,9 @@ function fileName(tracking) { if (!/^[A-Z]{2}\d{9}[A-Z]{2}$/.test(tracking)) thr
   $('parse').parentElement.append(quickCalcium);
   quickCalcium.onclick = runSafely(() => {
     readForm(); state.packages = []; state.packageIndex = 0; state.packagesRaw = '';
+    state.batchComplete = false;
     Object.assign(state.order, { item: 'calcium', price: 1200, quantity: 2, category: '\u793c\u54c1', payment: '\u65e0\u5546\u4e1a\u4ef7\u503c', parcelNo: 1, parcelTotal: 1, items: [{ item: 'calcium', price: 1200, quantity: 2, total: 2400 }] });
-    state.agreed = false; persist(); syncForm(); status('Default calcium parcel loaded.');
+    state.agreed = true; persist(); syncForm(); status('Default calcium parcel loaded.');
   });
 
 
@@ -901,4 +931,9 @@ function fileName(tracking) { if (!/^[A-Z]{2}\d{9}[A-Z]{2}$/.test(tracking)) thr
     return { name, phone, country: 'CHINA', province, city, address1: rest || detail, address2: detail, postal: '' };
   };
 
+  // Clean up the last completed parcel left behind by previous versions.
+  if (restoreCompletedBatch) {
+    for (const parcel of state.packages) parcel.completed = true;
+    finishParcel(state.downloadedTracking);
+  }
 })();
