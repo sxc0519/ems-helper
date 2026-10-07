@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Japan Post EMS Helper
 // @namespace    local.ems.helper
-// @version      2.0.15
+// @version      2.0.16
 // @description  EMS address, parcel and PDF helper.
 // @match        https://www.int-mypage.post.japanpost.jp/mypage/*.do
 // @updateURL    https://raw.githubusercontent.com/sxc0519/ems-helper/main/ems-helper.user.js
@@ -87,7 +87,7 @@ function parseAddress(raw) {
   return { name, phone, country, ...(country === 'CHINA' ? splitChineseAddress(address.replace(/\bCHINA\b/ig, '')) : parseForeignAddress(address, country)) };
 }
 function romanizeItem(value) {
-  let item = cleanText(value);
+  let item = cleanText(value).normalize('NFKC').replace(/[\u201c\u201d]/g, '"').replace(/[\u2018\u2019]/g, "'").replace(/[\u2010-\u2015]/g, '-');
   for (const [re, output] of [[/ユリス錠/gi, 'YURISU TABLETS '], [/錠/gi, ' TABLETS '], [/カプセル/gi, ' CAPSULES '], [/散/gi, ' POWDER '], [/シロップ/gi, ' SYRUP ']]) item = item.replace(re, output);
   item = item.replace(/\s+/g, ' ').trim().toUpperCase();
   if (!item || !/^[\x20-\x7e]+$/.test(item)) throw new Error(`品名“${value}”无法可靠转换为英文，请手动填写英文申报名。`);
@@ -96,7 +96,7 @@ function romanizeItem(value) {
 function parsePackages(raw) {
   const lines = cleanText(raw).split('\n').filter(Boolean); if (!lines.length) throw new Error('请粘贴包裹清单。');
   return lines.map((line, index) => {
-    const m = line.match(/^(.+?)\s+(\d+)\s*(?:盒|箱|个|件|pcs?|boxes?)\s+(\d+)\s*(?:JPY|円|日元)?$/i);
+    const m = line.normalize('NFKC').match(/^(.+?)\s*(\d+)\s*(?:\u76d2|\u7bb1|\u4e2a|\u4ef6|pcs?|boxes?)?\s+(\d+)\s*(?:JPY|\u5186|\u65e5\u5143)?$/i);
     if (!m) throw new Error(`第 ${index + 1} 行无法识别。格式：品名 500盒 2300`);
     const quantity = Number(m[2]), price = Number(m[3]), item = romanizeItem(m[1]);
     if (!Number.isSafeInteger(quantity) || quantity < 1 || quantity > 99999) throw new Error(`第 ${index + 1} 行数量无效。`);
@@ -502,7 +502,7 @@ function fileName(tracking) { if (!/^[A-Z]{2}\d{9}[A-Z]{2}$/.test(tracking)) thr
       input:focus,select:focus,textarea:focus{outline:2px solid #6da4d4;outline-offset:1px}button.action{border:1px solid #b7cada;border-radius:6px;padding:8px 10px;background:#edf3f8;color:#18324d;cursor:pointer;font-weight:600}button.primary{background:#12619a;border-color:#12619a;color:white}button:disabled{opacity:.45;cursor:default}
       .actions{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0}.hint{color:#60768b;font-size:11px;margin:7px 0}.total{margin:9px 0;padding:8px;background:#edf5fc;border-radius:6px;font-weight:600}.status{white-space:pre-wrap;margin-top:9px;padding:8px;border-radius:6px;background:#f1f5f8;font-size:12px}.error{background:#fff0ed;color:#9f3527}.check{display:flex;gap:7px;margin:9px 0;align-items:flex-start}.check input{width:auto;margin-top:4px}.check span{font-size:11px}details{margin-top:8px}summary{cursor:pointer;font-weight:600;margin-bottom:8px}.queue{font-size:11px;background:#f6f8fa;border:1px solid #d9e2eb;border-radius:6px;padding:6px;margin-top:6px;white-space:pre-wrap}.hidden{display:none!important}
     </style>
-    <section class="panel"><header><strong>EMS 制单助手 <span class="version">v2.0.15</span></strong><button id="collapse" title="收起／展开">−</button></header><main id="main">
+    <section class="panel"><header><strong>EMS 制单助手 <span class="version">v2.0.16</span></strong><button id="collapse" title="收起／展开">−</button></header><main id="main">
       <label>粘贴收件信息（顺序不限；国外建议用 Address / CONTACT / Telephone）<textarea id="raw" placeholder="Address: Chommany Village, Xaysettha District, Vientiane Capital, Lao PDR&#10;CONTACT: Xonthichack RATTANA(TR)&#10;Telephone: 00856 20 88782889"></textarea></label>
       <div class="actions"><button class="action" id="parse">识别地址</button><button class="action" id="clear">清空地址</button></div>
       <details open><summary>收件信息预览</summary><div class="grid">
