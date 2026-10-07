@@ -112,6 +112,8 @@ function validateOrder(order) {
   if (String(r.province || '').length > 30 || String(r.address1 || '').length > 80) throw new Error('省份或地址1超过网站字符限制。');
   normalizePhone(r.phone); if (!r.country) throw new Error('请选择国家。');
   if (!['CGM','GENTLE'].includes(order.sender)) throw new Error('请选择寄件人。');
+  if (!['礼品','电子商务商品','商业商品(B2B)','退件','其他'].includes(order.category)) throw new Error('请选择内容物类别。');
+  if (!['无商业价值','有商业价值'].includes(order.payment)) throw new Error('请选择付款条件。');
   if (!String(order.item || '').trim() || !/^[\x20-\x7e]+$/.test(order.item)) throw new Error('请用英文填写品名。');
   if (!Number.isSafeInteger(order.price) || order.price <= 0) throw new Error('单价应为正整数日元。');
   if (!Number.isSafeInteger(order.quantity) || order.quantity <= 0 || order.quantity > 99999) throw new Error('数量应为 1～99999。');
@@ -125,7 +127,12 @@ function fileName(tracking) { if (!/^[A-Z]{2}\d{9}[A-Z]{2}$/.test(tracking)) thr
   // A browser can briefly run an older userscript during an update. Keep only
   // the newest panel so its state and actions cannot conflict with the old one.
   // Use a distinct host ID so legacy observers cannot remove this panel.
-  if (document.getElementById('ems-helper-panel-v215')) return;
+  const PANEL_ID = 'ems-helper-panel-v216';
+  if (document.getElementById(PANEL_ID)) return;
+  const removeLegacyPanels = () => {
+    for (const id of ['ems-helper-panel-v215', 'ems-helper-panel']) document.getElementById(id)?.remove();
+  };
+  removeLegacyPanels();
 
   const SETTINGS_KEY = 'ems-helper.settings.v2';
   const SESSION_KEY = 'ems-helper.session.v2';
@@ -134,9 +141,15 @@ function fileName(tracking) { if (!/^[A-Z]{2}\d{9}[A-Z]{2}$/.test(tracking)) thr
   const readJSON = (storage, key, fallback) => { try { return JSON.parse(storage.getItem(key)) || fallback; } catch { return fallback; } };
   const prefs = { ...DEFAULTS, ...readJSON(localStorage, SETTINGS_KEY, {}) };
   let state = readJSON(sessionStorage, SESSION_KEY, null) || {
-    order: { ...prefs, parcelNo: 1, parcelTotal: 1, recipient: { ...EMPTY_RECIPIENT }, raw: '' }, packages: [], packageIndex: 0, packagesRaw: '', phase: 'idle', agreed: true, lastAction: '', status: ''
+    order: { ...prefs, parcelNo: 1, parcelTotal: 1, recipient: { ...EMPTY_RECIPIENT }, raw: '' }, packages: [], packageIndex: 0, packagesRaw: '', phase: 'idle', agreed: false, lastAction: '', status: ''
   };
   state.packages ||= []; state.packageIndex ||= 0; state.packagesRaw ||= '';
+  // Review declarations again after upgrading; do not resume an old run.
+  if (state.scriptVersion !== '2.0.16-fixed') {
+    state.phase = 'idle'; state.agreed = false; state.lastAction = '';
+    delete state.order.customsFormal; delete state.order.customsDelegated;
+    state.scriptVersion = '2.0.16-fixed';
+  }
   let busy = false;
   let cancelled = false;
   const norm = value => String(value || '').replace(/\s+/g, ' ').trim();
@@ -389,11 +402,19 @@ function fileName(tracking) { if (!/^[A-Z]{2}\d{9}[A-Z]{2}$/.test(tracking)) thr
       order.recipient[k] && !compact(recipient.textContent).includes(compact(order.recipient[k])))) {
       throw new Error('确认页收件信息与预览不一致，请检查。');
     }
-    if (!leafRows().some(tr => {
+    const expectedItems = order.items?.length ? order.items : [order];
+    const reviewRows = leafRows().filter(tr => {
       const c = [...tr.cells];
-      return c.length === 4 && textOf(c[0]) === norm(order.item) &&
-        textOf(c[2]).replace(/\s/g, '') === `${order.price}JPY` && textOf(c[3]) === String(order.quantity);
-    })) throw new Error('确认页内容物、单价或数量不一致，请检查。');
+      return c.length === 4 && /^\d+JPY$/.test(textOf(c[2]).replace(/\s/g, '')) && /^\d+$/.test(textOf(c[3]));
+    });
+    const remaining = [...reviewRows];
+    for (const item of expectedItems) {
+      const index = remaining.findIndex(tr => textOf(tr.cells[0]) === norm(item.item) &&
+        textOf(tr.cells[2]).replace(/\s/g, '') === `${item.price}JPY` && textOf(tr.cells[3]) === String(item.quantity));
+      if (index < 0) throw new Error(`确认页商品 ${item.item}、单价或数量不一致，请检查。`);
+      remaining.splice(index, 1);
+    }
+    if (remaining.length) throw new Error('确认页有额外商品，请检查。');
     const totalRow = fieldRow('内容物品总额');
     if (!totalRow || !textOf(totalRow).replace(/\s/g, '').includes(`${validateOrder(order)}日元`) || !textOf(totalRow).includes(order.category)) {
       throw new Error('确认页总额或类别不一致，请检查。');
@@ -425,6 +446,7 @@ function fileName(tracking) { if (!/^[A-Z]{2}\d{9}[A-Z]{2}$/.test(tracking)) thr
     if (!frame) throw new Error('PDF 尚未生成；请等待网页加载。');
     const tracking = trackingNumber();
     const filename = fileName(tracking || '');
+    if (state.downloadedTracking === tracking) { status(`本运单已触发下载：${filename}。如需再次保存，请使用网页 PDF 阅读器。`); return; }
     const url = new URL(frame.getAttribute('src'), location.href);
     if (url.origin !== location.origin) throw new Error('PDF 地址不属于日本邮便本站，已停止。');
     status(`正在下载 ${filename}…`);
@@ -438,21 +460,20 @@ function fileName(tracking) { if (!/^[A-Z]{2}\d{9}[A-Z]{2}$/.test(tracking)) thr
     link.href = objectURL; link.download = filename;
     link.style.display = 'none'; document.body.append(link); link.click(); link.remove();
     setTimeout(() => URL.revokeObjectURL(objectURL), 60000);
-    state.phase = 'done'; state.tracking = tracking; state.registrationPending = false;
+    state.phase = 'done'; state.tracking = tracking; state.downloadedTracking = tracking; state.registrationPending = false;
     const hasNext = state.packages.length && state.packageIndex < state.packages.length - 1;
     if (hasNext) {
       state.packageIndex += 1;
       Object.assign(state.order, state.packages[state.packageIndex]);
+      delete state.order.customsFormal; delete state.order.customsDelegated;
       state.order.recipient ||= { ...EMPTY_RECIPIENT };
     } else if (!state.packages.length) state.order = { ...prefs, recipient: { ...EMPTY_RECIPIENT }, raw: '' };
-    state.agreed = true;
+    state.agreed = false;
     syncForm();
     const next = hasNext ? ` 下一票已载入：${state.packageIndex + 1}/${state.packages.length}。打印完毕返回菜单后核对并开始。` : '';
     status(`已触发下载：${filename}。保存到浏览器的“下载”文件夹。${next}`);
-    if (hasNext) {
-      status(`已触发下载：${filename}。下一票 ${state.packageIndex + 1}/${state.packages.length} 正在自动继续。`);
-      setTimeout(() => { cancelled = false; advance(); }, 600);
-    }
+    // The print page must return to the menu before the next parcel starts.
+    // Leave the next parcel loaded for an explicit start after review.
     updateActions();
   }
   async function advance() {
@@ -489,7 +510,7 @@ function fileName(tracking) { if (!/^[A-Z]{2}\d{9}[A-Z]{2}$/.test(tracking)) thr
   }
 
   const host = document.createElement('div');
-  host.id = 'ems-helper-panel-v215';
+  host.id = PANEL_ID;
   document.documentElement.append(host);
   const shadow = host.attachShadow({ mode: 'open' });
   shadow.innerHTML = `
@@ -512,14 +533,14 @@ function fileName(tracking) { if (!/^[A-Z]{2}\d{9}[A-Z]{2}$/.test(tracking)) thr
         <label class="full">小区／楼栋／房间<input id="address1"></label>
         <label>邮编（可留空）<input id="postal" inputmode="numeric"></label><label>国家<select id="country"><option>CHINA</option><option>LAOS</option><option>VIET NAM</option><option>THAILAND</option><option>CAMBODIA</option><option>MALAYSIA</option><option>SINGAPORE</option><option>PHILIPPINES</option><option>INDONESIA</option><option>KOREA</option><option>TAIWAN</option><option>HONG KONG</option><option>MACAO</option><option>AUSTRALIA</option><option>CANADA</option><option>UNITED STATES OF AMERICA</option><option>UNITED KINGDOM</option></select></label>
       </div></details>
-      <details open><summary>包裹队列（一行一个包裹）</summary>
+      <details open><summary>包裹队列（默认一行一包；用 PACKAGE 1 分组）</summary>
         <label>格式：品名 数量 单价（日元）<textarea id="packages-raw" placeholder="ユリス錠0.5mg 500盒 2300&#10;ユリス錠1mg 500盒 4300&#10;ユリス錠2mg 500盒 7400"></textarea></label>
         <div class="actions"><button class="action" id="parse-packages">建立包裹队列</button><select id="package-select" aria-label="当前包裹"></select></div>
         <div id="queue" class="queue">尚未建立队列；可继续使用下方单包裹设置。</div>
       </details>
       <details open><summary>寄件与申报</summary><div class="grid">
         <label class="full">寄件人<select id="sender"><option value="CGM">CGM INNOVATION CO.LTD.</option><option value="GENTLE">Gentle General Medicine Clinic</option></select></label>
-        <label class="full">英文品名<input id="item"></label>
+        <label class="full">英文品名（多商品包裹：此处编辑第一件，其余见队列）<input id="item"></label>
         <label>单价（日元）<input id="price" type="number" min="1" step="1"></label><label>数量<input id="quantity" type="number" min="1" max="99999" step="1"></label>
         <label>类别<select id="category"><option value=""></option><option>礼品</option><option>电子商务商品</option><option>商业商品(B2B)</option><option>退件</option><option>其他</option></select></label>
         <label>付款条件<select id="payment"><option value=""></option><option>无商业价值</option><option>有商业价值</option></select></label>
@@ -547,17 +568,32 @@ function fileName(tracking) { if (!/^[A-Z]{2}\d{9}[A-Z]{2}$/.test(tracking)) thr
     for (const key of Object.keys(EMPTY_RECIPIENT)) recipient[key] = $(key).value.trim();
     const parcelNo = state.order.parcelNo || 1, parcelTotal = state.order.parcelTotal || 1;
     const customsFormal = state.order.customsFormal, customsDelegated = state.order.customsDelegated;
+    const previousItems = state.order.items;
     state.order = { recipient, raw: $('raw').value, parcelNo, parcelTotal, customsFormal, customsDelegated };
     for (const key of Object.keys(DEFAULTS)) state.order[key] = ['price','quantity'].includes(key) ? Number($(key).value) : $(key).value.trim();
+    if (Array.isArray(previousItems) && previousItems.length) {
+      state.order.items = previousItems.map(item => ({ ...item }));
+      Object.assign(state.order.items[0], {
+        item: state.order.item, sourceName: state.order.item,
+        price: state.order.price, quantity: state.order.quantity,
+        total: state.order.price * state.order.quantity
+      });
+      state.order.total = state.order.items.reduce((sum, item) => sum + item.price * item.quantity, 0);
+      if (state.packages[state.packageIndex]) Object.assign(state.packages[state.packageIndex], {
+        item: state.order.item, price: state.order.price, quantity: state.order.quantity,
+        items: state.order.items.map(item => ({ ...item })), total: state.order.total
+      });
+    }
     state.packagesRaw = $('packages-raw').value;
     state.agreed = $('agree').checked;
-    persist(); updateTotal();
+    persist(); renderQueue(); updateTotal();
   }
   function applyPackage(index) {
     if (!state.packages[index]) throw new Error('包裹编号不存在。');
     state.packageIndex = index;
     Object.assign(state.order, state.packages[index]);
-    state.agreed = true; persist(); syncForm();
+    delete state.order.customsFormal; delete state.order.customsDelegated;
+    state.agreed = false; persist(); syncForm();
   }
   function renderQueue() {
     const select = $('package-select'); select.innerHTML = '';
@@ -569,11 +605,19 @@ function fileName(tracking) { if (!/^[A-Z]{2}\d{9}[A-Z]{2}$/.test(tracking)) thr
       const option = document.createElement('option'); option.value = String(i); option.textContent = `${i + 1}/${state.packages.length} ${p.item}`; select.append(option);
     });
     select.value = String(state.packageIndex);
-    $('queue').textContent = state.packages.map((p, i) => `${i + 1}/${state.packages.length}  ${p.item}  ${p.quantity} × ¥${p.price} = ¥${p.total.toLocaleString('zh-CN')}`).join('\n');
+    $('queue').textContent = state.packages.map((p, i) => {
+      const items = p.items?.length ? p.items : [p];
+      const total = items.reduce((sum, item) => sum + item.quantity * item.price, 0);
+      return [`包裹 ${i + 1}/${state.packages.length} · 合计 ¥${total.toLocaleString('zh-CN')}`,
+        ...items.map(item => `  ${item.item}  ${item.quantity} × ¥${item.price} = ¥${(item.quantity * item.price).toLocaleString('zh-CN')}`)].join('\n');
+    }).join('\n\n');
     $('parcel-number').textContent = `当前包裹编号：${state.order.parcelNo} / ${state.order.parcelTotal}`;
   }
   function updateTotal() {
-    const total = Number($('price').value) * Number($('quantity').value);
+    const items = state.order.items?.length ? state.order.items : [state.order];
+    const total = items.reduce((sum, item, index) => sum + (index === 0
+      ? Number($('price').value) * Number($('quantity').value)
+      : Number(item.price) * Number(item.quantity)), 0);
     $('total').textContent = Number.isFinite(total) && total > 0 ? `申报合计：${total.toLocaleString('zh-CN')} 日元` : '请填写有效单价和数量';
   }
   function updateActions() {
@@ -587,25 +631,27 @@ function fileName(tracking) { if (!/^[A-Z]{2}\d{9}[A-Z]{2}$/.test(tracking)) thr
   function runSafely(fn) { return async () => { try { await fn(); } catch (error) { stop(error.message || String(error), true); } }; }
   $('collapse').onclick = () => { const hidden = $('main').classList.toggle('hidden'); $('footer').classList.toggle('hidden', hidden); $('collapse').textContent = hidden ? '+' : '−'; };
   $('parse').onclick = runSafely(() => {
-    readForm(); state.order.recipient = parseAddress(state.order.raw); state.agreed = true;
+    readForm(); state.order.recipient = parseAddress(state.order.raw); state.agreed = false;
     syncForm(); status('地址已拆分，请核对预览。');
   });
   $('parse-packages').onclick = runSafely(() => {
     readForm(); state.packages = parsePackages(state.packagesRaw); state.packageIndex = 0;
-    Object.assign(state.order, state.packages[0]); state.agreed = true; syncForm();
+    Object.assign(state.order, state.packages[0]); state.agreed = false; syncForm();
+    delete state.order.customsFormal; delete state.order.customsDelegated;
     status(`已建立 ${state.packages.length} 个包裹。第三列按“单价”计算；请逐票核对申报总额。`);
   });
   $('package-select').onchange = () => applyPackage(Number($('package-select').value));
   $('clear').onclick = () => {
     state.phase = 'idle'; cancelled = true; state.lastAction = '';
     state.order.recipient = { ...EMPTY_RECIPIENT }; state.order.raw = ''; state.order.parcelNo = 1; state.order.parcelTotal = 1;
-    state.packages = []; state.packageIndex = 0; state.packagesRaw = ''; state.agreed = true;
+    state.packages = []; state.packageIndex = 0; state.packagesRaw = ''; state.agreed = false;
+    delete state.order.items; delete state.order.total; delete state.order.customsFormal; delete state.order.customsDelegated;
     syncForm(); status('本页地址草稿已清空；网站上的表单未被清除。'); updateActions();
   };
   $('save-defaults').onclick = runSafely(() => {
     readForm(); const settings = {};
     for (const key of Object.keys(DEFAULTS)) settings[key] = state.order[key];
-    if (!Number.isInteger(settings.price) || settings.price <= 0 || !Number.isInteger(settings.quantity) || settings.quantity < 1 || settings.quantity > 999 || !settings.item) throw new Error('请检查默认品名、单价和数量。');
+    if (!Number.isInteger(settings.price) || settings.price <= 0 || !Number.isInteger(settings.quantity) || settings.quantity < 1 || settings.quantity > 99999 || !settings.item) throw new Error('请检查默认品名、单价和数量。');
     Object.assign(prefs, settings); localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
     status('默认寄件人和申报值已保存在本机；每票可修改。收件人资料不会保存为默认值。');
   });
@@ -632,12 +678,14 @@ function fileName(tracking) { if (!/^[A-Z]{2}\d{9}[A-Z]{2}$/.test(tracking)) thr
   shadow.addEventListener('change', event => {
     if (event.target.matches('input,select,textarea')) {
       if (['fill', 'generate'].includes(state.phase)) stop('已暂停，修改后请重新开始。');
-      if (event.target.id !== 'agree' && state.phase !== 'fill') $('agree').checked = false;
+      if (event.target.id !== 'agree') {
+        $('agree').checked = false; delete state.order.customsFormal; delete state.order.customsDelegated;
+      }
       readForm();
     }
   });
   syncForm();
-  ui.status.textContent = state.status || '粘贴收件地址后点击“识别地址”。默认：CGM／calcium／1,200 日元 × 2／礼品／无商业价值。';
+  ui.status.textContent = state.status || '已加载 v2.0.16。粘贴收件地址后点击“识别地址”，填写申报信息并核对后勾选声明。';
   updateActions();
   /* TEST_HOOK */
   if (['fill', 'generate'].includes(state.phase)) setTimeout(advance, 400);
@@ -646,6 +694,7 @@ function fileName(tracking) { if (!/^[A-Z]{2}\d{9}[A-Z]{2}$/.test(tracking)) thr
   // removes a panel or when Japan Post rebuilds its page.
   let panelRepairs = 0;
   const repairTimer = setInterval(() => {
+    removeLegacyPanels();
     if (host.isConnected) return;
     if (document.getElementById(host.id) || panelRepairs >= 3) {
       clearInterval(repairTimer); return;
@@ -670,12 +719,27 @@ function fileName(tracking) { if (!/^[A-Z]{2}\d{9}[A-Z]{2}$/.test(tracking)) thr
       if (grouped) current.push(parsed); else groups.push([parsed]);
     }
     if (!groups.length || groups.some(group => !group.length)) throw new Error('Each package needs at least one item.');
-    return groups.map((items, index) => ({ ...items[0], items, total: items.reduce((sum, item) => sum + item.total, 0), parcelNo: index + 1, parcelTotal: groups.length }));
+    return groups.map((items, index) => {
+      const merged = new Map();
+      for (const item of items) {
+        const key = JSON.stringify([item.item, item.price]);
+        const existing = merged.get(key);
+        if (existing) { existing.quantity += item.quantity; existing.total = existing.quantity * existing.price; }
+        else merged.set(key, { ...item });
+      }
+      const groupedItems = [...merged.values()];
+      const total = groupedItems.reduce((sum, item) => sum + item.total, 0);
+      if (!Number.isSafeInteger(total) || groupedItems.some(item => item.quantity > 99999)) throw new Error('包裹数量或总额超出范围。');
+      return { ...groupedItems[0], items: groupedItems, total, parcelNo: index + 1, parcelTotal: groups.length };
+    });
   };
   const baseValidateOrder = validateOrder;
   validateOrder = order => {
     const items = Array.isArray(order.items) && order.items.length ? order.items : [order];
-    return items.reduce((sum, item) => sum + baseValidateOrder({ ...order, ...item, items: undefined }), 0);
+    const total = items.reduce((sum, item) => sum + baseValidateOrder({ ...order, ...item,
+      parcelNo: order.parcelNo, parcelTotal: order.parcelTotal, items: undefined }), 0);
+    if (!Number.isSafeInteger(total)) throw new Error('包裹申报总额超出范围。');
+    return total;
   };
   fillContents = async function () {
     const order = state.order;
@@ -710,8 +774,8 @@ function fileName(tracking) { if (!/^[A-Z]{2}\d{9}[A-Z]{2}$/.test(tracking)) thr
   $('parse').parentElement.append(quickCalcium);
   quickCalcium.onclick = runSafely(() => {
     readForm(); state.packages = []; state.packageIndex = 0; state.packagesRaw = '';
-    Object.assign(state.order, { item: 'calcium', price: 1200, quantity: 2, category: '\u793c\u54c1', payment: '\u73b0\u91d1\u652f\u4ed8', parcelNo: 1, parcelTotal: 1, items: [{ item: 'calcium', price: 1200, quantity: 2, total: 2400 }] });
-    state.agreed = true; persist(); syncForm(); status('Default calcium parcel loaded.');
+    Object.assign(state.order, { item: 'calcium', price: 1200, quantity: 2, category: '\u793c\u54c1', payment: '\u65e0\u5546\u4e1a\u4ef7\u503c', parcelNo: 1, parcelTotal: 1, items: [{ item: 'calcium', price: 1200, quantity: 2, total: 2400 }] });
+    state.agreed = false; persist(); syncForm(); status('Default calcium parcel loaded.');
   });
 
 
